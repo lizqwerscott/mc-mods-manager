@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+
     const exe = b.addExecutable(.{
         .name = "mc_mods_manager",
         .root_module = b.createModule(.{
@@ -82,6 +83,13 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    const toml_dep = b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.root_module.addImport("toml", toml_dep.module("toml"));
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

@@ -1,5 +1,19 @@
 const std = @import("std");
+
+const toml = @import("toml");
+
 const mc_mods_manager = @import("mc_mods_manager");
+
+const LocalConfig = struct {
+    path: []const u8,
+};
+
+const RemoteConfig = struct {
+    host: []const u8,
+    path: []const u8,
+};
+
+const Config = struct { local: *LocalConfig, remote: *RemoteConfig };
 
 pub fn main() !void {
     var stdout_buffer: [512]u8 = undefined;
@@ -25,6 +39,9 @@ pub fn main() !void {
     if (std.fs.cwd().access(config_path, .{})) {
         try stdout.print("load config {s}\n", .{config_path});
         try stdout.flush();
+        const config = try loadConfig(config_path, main_allocator);
+
+        try scanDirFile(config.local.path);
     } else |err| {
         switch (err) {
             error.FileNotFound => {
@@ -56,6 +73,35 @@ fn parseCommandLineWithArena(main_allocator: std.mem.Allocator) ![]const u8 {
     }
 
     return try main_allocator.dupe(u8, DEFAULT_CONFIG);
+}
+
+fn loadConfig(config_path: []const u8, main_allocator: std.mem.Allocator) !Config {
+    var parser = toml.Parser(Config).init(main_allocator);
+    defer parser.deinit();
+
+    var result = try parser.parseFile(config_path);
+
+    defer result.deinit();
+
+    const config = result.value;
+    std.debug.print("local path: {s}\n", .{config.local.path});
+    std.debug.print("remote host: {s}, remote path: {s}\n", .{ config.remote.host, config.remote.path });
+
+    return config;
+}
+
+fn scanDirFile(dir_path: []const u8) !void {
+    const cwd = std.fs.cwd();
+    const dir = try cwd.openDir(dir_path, .{ .iterate = true });
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == std.fs.Dir.Entry.Kind.file) {
+            const ext = std.fs.path.extension(entry.name);
+            if (std.mem.eql(u8, ext, ".jar")) {
+                std.debug.print("File name: {s}\n", .{entry.name});
+            }
+        }
+    }
 }
 
 test "simple test" {
