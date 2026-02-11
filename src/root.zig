@@ -8,8 +8,28 @@ const ModInfo = struct {
     version: []const u8,
     displayName: []const u8,
     description: []const u8,
-    authors: []const u8,
+    authors: ?[]const u8 = null,
     logoFile: ?[]const u8 = null,
+
+    pub fn deinit(self: ModInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.modId);
+        allocator.free(self.version);
+        allocator.free(self.displayName);
+        allocator.free(self.description);
+        if (self.authors) |a| allocator.free(a);
+        if (self.logoFile) |l| allocator.free(l);
+    }
+
+    pub fn clone(self: ModInfo, allocator: std.mem.Allocator) !ModInfo {
+        return ModInfo{
+            .modId = try allocator.dupe(u8, self.modId),
+            .version = try allocator.dupe(u8, self.version),
+            .displayName = try allocator.dupe(u8, self.displayName),
+            .description = try allocator.dupe(u8, self.description),
+            .authors = if (self.authors) |a| try allocator.dupe(u8, a) else null,
+            .logoFile = if (self.logoFile) |l| try allocator.dupe(u8, l) else null,
+        };
+    }
 };
 
 const ModMetadata = struct {
@@ -18,6 +38,28 @@ const ModMetadata = struct {
     license: []const u8,
 
     mods: []const ModInfo,
+
+    pub fn deinit(self: ModMetadata, allocator: std.mem.Allocator) void {
+        allocator.free(self.modLoader);
+        allocator.free(self.loaderVersion);
+        allocator.free(self.license);
+        for (self.mods) |mod| mod.deinit(allocator);
+        allocator.free(self.mods);
+    }
+
+    pub fn clone(self: ModMetadata, allocator: std.mem.Allocator) !ModMetadata {
+        const mods_copy = try allocator.alloc(ModInfo, self.mods.len);
+        errdefer allocator.free(mods_copy);
+        for (self.mods, 0..) |mod, i| {
+            mods_copy[i] = try mod.clone(allocator);
+        }
+        return ModMetadata{
+            .modLoader = try allocator.dupe(u8, self.modLoader),
+            .loaderVersion = try allocator.dupe(u8, self.loaderVersion),
+            .license = try allocator.dupe(u8, self.license),
+            .mods = mods_copy,
+        };
+    }
 };
 
 const ModParseError = error{FailedParseModInfo};
@@ -44,7 +86,7 @@ pub fn executeRemoteCommand(
         // .max_output_bytes = 10 * 1024 * 1024, // 允许的最大输出字节数，防止爆炸
     });
     defer {
-        // allocator.free(result.stdout);
+        allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
 
@@ -104,11 +146,7 @@ fn parseModInfo(mod_info: []const u8, allocator: std.mem.Allocator) !ModMetadata
     return parse_result.value;
 }
 
-fn checkJarInfo(jar_path: []const u8, main_allocator: std.mem.Allocator) !ModMetadata {
-    var arena = std.heap.ArenaAllocator.init(main_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
+fn checkJarInfo(jar_path: []const u8, allocator: std.mem.Allocator) !ModMetadata {
     const argv = [_][]const u8{
         "unzip",
         "-p",
@@ -147,11 +185,15 @@ fn checkJarInfo(jar_path: []const u8, main_allocator: std.mem.Allocator) !ModMet
 }
 
 pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const ModMetadata {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     const cwd = std.fs.cwd();
     const dir = try cwd.openDir(dir_path, .{ .iterate = true });
     var it = dir.iterate();
 
-    var mod_infos = try std.ArrayList(ModMetadata).initCapacity(allocator, it.end_index);
+    var mod_infos = try std.ArrayList(ModMetadata).initCapacity(allocator, 0);
 
     var stderr_buffer: [512]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
@@ -165,15 +207,16 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
         const full_path = try dir.realpathAlloc(allocator, entry.name);
         defer allocator.free(full_path);
 
-        if (checkJarInfo(full_path, allocator)) |jar_info| {
-            try mod_infos.append(allocator, jar_info);
+        if (checkJarInfo(full_path, arena_alloc)) |jar_info| {
+            const cloned = try jar_info.clone(allocator);
+            try mod_infos.append(allocator, cloned);
         } else |err| {
             try stderr.print("Error Parse {s}: {}\n", .{ full_path, err });
             try stderr.flush();
         }
     }
 
-    return mod_infos.items;
+    return mod_infos.toOwnedSlice(allocator);
 }
 
 test "parseModInfo basic parsing" {
