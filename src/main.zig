@@ -15,20 +15,20 @@ const RemoteConfig = struct {
 
 const Config = struct { local: *LocalConfig, remote: *RemoteConfig };
 
+var stdout_buffer: [512]u8 = undefined;
+// var stdin_buffer: [512]u8 = undefined;
+var stderr_buffer: [512]u8 = undefined;
+
+var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+const stdout = &stdout_writer.interface;
+
+// var stdin_writer = std.fs.File.stdin().writer(&stdin_buffer);
+// const stdin = &stdin_writer.interface;
+
+var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+const stderr = &stderr_writer.interface;
+
 pub fn main() !void {
-    var stdout_buffer: [512]u8 = undefined;
-    // var stdin_buffer: [512]u8 = undefined;
-    var stderr_buffer: [512]u8 = undefined;
-
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    // var stdin_writer = std.fs.File.stdin().writer(&stdin_buffer);
-    // const stdin = &stdin_writer.interface;
-
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const main_allocator = arena.allocator();
@@ -41,7 +41,19 @@ pub fn main() !void {
         try stdout.flush();
         const config = try loadConfig(config_path, main_allocator);
 
-        try scanDirFile(config.local.path);
+        try stdout.print("Scan Local Dir: {s}\n", .{config.local.path});
+        try stdout.flush();
+
+        const local_mods = try mc_mods_manager.scanDirFile(config.local.path, main_allocator);
+        try stdout.print("\nFound {d} mods:\n", .{local_mods.len});
+        try stdout.flush();
+
+        for (local_mods, 0..) |mod, i| {
+            for (mod.mods) |mod_info| {
+                try stdout.print("Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
+            }
+            try stdout.flush();
+        }
     } else |err| {
         switch (err) {
             error.FileNotFound => {
@@ -84,24 +96,16 @@ fn loadConfig(config_path: []const u8, main_allocator: std.mem.Allocator) !Confi
     defer result.deinit();
 
     const config = result.value;
-    std.debug.print("local path: {s}\n", .{config.local.path});
-    std.debug.print("remote host: {s}, remote path: {s}\n", .{ config.remote.host, config.remote.path });
+
+    try stdout.writeAll("Local:\n");
+    try stdout.print("  path: {s}\n", .{config.local.path});
+
+    try stdout.writeAll("Remote:\n");
+    try stdout.print("  host: {s}\n", .{config.remote.host});
+    try stdout.print("  path: {s}\n", .{config.remote.path});
+    try stdout.flush();
 
     return config;
-}
-
-fn scanDirFile(dir_path: []const u8) !void {
-    const cwd = std.fs.cwd();
-    const dir = try cwd.openDir(dir_path, .{ .iterate = true });
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        if (entry.kind == std.fs.Dir.Entry.Kind.file) {
-            const ext = std.fs.path.extension(entry.name);
-            if (std.mem.eql(u8, ext, ".jar")) {
-                std.debug.print("File name: {s}\n", .{entry.name});
-            }
-        }
-    }
 }
 
 test "simple test" {
