@@ -86,21 +86,24 @@ pub fn executeRemoteCommand(
         // .max_output_bytes = 10 * 1024 * 1024, // 允许的最大输出字节数，防止爆炸
     });
     defer {
-        allocator.free(result.stdout);
+        // allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
+
+    var stderr_buffer: [512]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     switch (result.term) {
         .Exited => |code| {
             if (code == 0) {
-                std.debug.print("Res: {s}", .{result.stdout});
                 return result.stdout;
             } else {
-                std.debug.print("Error: run {s} in {s}, exit code = {d}\n", .{ command, host, code });
-                std.debug.print("Error: {s}\n", .{result.stderr});
+                try stderr.print("Error: run {s} in {s}, exit code = {d}\n", .{ command, host, code });
+                try stderr.print("Error: {s}\n", .{result.stderr});
             }
         },
-        else => std.debug.print("Error: {}\n", .{result.term}),
+        else => try stderr.print("Error: {}\n", .{result.term}),
     }
     return error.FailedExecute;
 }
@@ -208,6 +211,67 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
         defer allocator.free(full_path);
 
         if (checkJarInfo(full_path, arena_alloc)) |jar_info| {
+            const cloned = try jar_info.clone(allocator);
+            try mod_infos.append(allocator, cloned);
+        } else |err| {
+            try stderr.print("Error Parse {s}: {}\n", .{ full_path, err });
+            try stderr.flush();
+        }
+    }
+
+    return mod_infos.toOwnedSlice(allocator);
+}
+
+fn getRemoteDirFile(allocator: std.mem.Allocator, host: []const u8, dir_path: []const u8) ![][]const u8 {
+    const remote_dir = try executeRemoteCommand(allocator, host, "ls", &[_][]const u8{ "-1", dir_path });
+    var lines = std.mem.splitScalar(u8, remote_dir, '\n');
+
+    var file_names = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
+        if (trimmed.len == 0) {
+            continue;
+        }
+        try file_names.append(allocator, line);
+    }
+
+    return file_names.toOwnedSlice(allocator);
+}
+
+fn checkRemoteJarInfo(allocator: std.mem.Allocator, host: []const u8, jar_path: []const u8) !ModMetadata {
+    const result = try executeRemoteCommand(allocator, host, "unzip", &[_][]const u8{
+        "-p", jar_path, "META-INF/mods.toml",
+    });
+    defer allocator.free(result);
+
+    return try parseModInfo(result, allocator);
+}
+
+pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.mem.Allocator) ![]const ModMetadata {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    // get remote file list
+    const file_names = try getRemoteDirFile(arena_alloc, host, dir_path);
+
+    var stderr_buffer: [512]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    var mod_infos = try std.ArrayList(ModMetadata).initCapacity(allocator, 0);
+
+    for (file_names) |name| {
+        if (!std.mem.eql(u8, std.fs.path.extension(name), ".jar")) continue;
+
+        const dir_path_cloned = try arena_alloc.dupe(u8, dir_path);
+        const full_path = try std.mem.concat(arena_alloc, u8, &[_][]const u8{ dir_path_cloned, "/", name });
+        defer arena_alloc.free(full_path);
+
+        const host_cloned = try arena_alloc.dupe(u8, host);
+        defer arena_alloc.free(host_cloned);
+        if (checkRemoteJarInfo(arena_alloc, host_cloned, full_path)) |jar_info| {
             const cloned = try jar_info.clone(allocator);
             try mod_infos.append(allocator, cloned);
         } else |err| {

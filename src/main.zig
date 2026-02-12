@@ -6,14 +6,48 @@ const mc_mods_manager = @import("mc_mods_manager");
 
 const LocalConfig = struct {
     path: []const u8,
+
+    fn deinit(self: LocalConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+    }
+
+    fn clone(self: LocalConfig, allocator: std.mem.Allocator) !LocalConfig {
+        return LocalConfig{
+            .path = try allocator.dupe(u8, self.path),
+        };
+    }
 };
 
 const RemoteConfig = struct {
     host: []const u8,
     path: []const u8,
+
+    fn deinit(self: RemoteConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.host);
+        allocator.free(self.path);
+    }
+
+    fn clone(self: RemoteConfig, allocator: std.mem.Allocator) !RemoteConfig {
+        return RemoteConfig{
+            .host = try allocator.dupe(u8, self.host),
+            .path = try allocator.dupe(u8, self.path),
+        };
+    }
 };
 
-const Config = struct { local: *LocalConfig, remote: *RemoteConfig };
+const Config = struct {
+    local: LocalConfig,
+    remote: RemoteConfig,
+
+    fn deinit(self: Config, allocator: std.mem.Allocator) void {
+        self.local.deinit(allocator);
+        self.remote.deinit(allocator);
+    }
+
+    fn clone(self: Config, allocator: std.mem.Allocator) !Config {
+        return Config{ .local = try self.local.clone(allocator), .remote = try self.remote.clone(allocator) };
+    }
+};
 
 var stdout_buffer: [512]u8 = undefined;
 // var stdin_buffer: [512]u8 = undefined;
@@ -37,18 +71,34 @@ pub fn main() !void {
     defer main_allocator.free(config_path);
 
     if (std.fs.cwd().access(config_path, .{})) {
-        try stdout.print("load config {s}\n", .{config_path});
+        try stdout.print("load config {s}:\n", .{config_path});
         try stdout.flush();
         const config = try loadConfig(config_path, main_allocator);
+        defer config.deinit(main_allocator);
 
-        try stdout.print("Scan Local Dir: {s}\n", .{config.local.path});
+        try stdout.print("\nScan Local Dir: {s}\n", .{config.local.path});
         try stdout.flush();
 
         const local_mods = try mc_mods_manager.scanDirFile(config.local.path, main_allocator);
-        try stdout.print("\nFound {d} mods:\n", .{local_mods.len});
+        try stdout.print("\nLocal Found {d} mods:\n", .{local_mods.len});
         try stdout.flush();
 
         for (local_mods, 0..) |mod, i| {
+            for (mod.mods) |mod_info| {
+                try stdout.print("Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
+            }
+            try stdout.flush();
+        }
+
+        try stdout.print("\nScan Remote Dir: {s}\n", .{config.remote.path});
+        try stdout.flush();
+
+        const remote_mods = try mc_mods_manager.scanRemoteDirFile(config.remote.host, config.remote.path, main_allocator);
+
+        try stdout.print("\nRemote Found {d} mods:\n", .{remote_mods.len});
+        try stdout.flush();
+
+        for (remote_mods, 0..) |mod, i| {
             for (mod.mods) |mod_info| {
                 try stdout.print("Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
             }
@@ -105,24 +155,5 @@ fn loadConfig(config_path: []const u8, main_allocator: std.mem.Allocator) !Confi
     try stdout.print("  path: {s}\n", .{config.remote.path});
     try stdout.flush();
 
-    return config;
-}
-
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    return try config.clone(main_allocator);
 }
