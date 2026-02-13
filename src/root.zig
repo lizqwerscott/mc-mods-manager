@@ -62,6 +62,58 @@ const ModMetadata = struct {
     }
 };
 
+const ParsedModInfo = struct {
+    name: []const u8,
+    version: ?[]const u8 = null,
+
+    pub fn deinit(self: ParsedModInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.version) |version| {
+            allocator.free(version);
+        }
+    }
+
+    pub fn clone(self: ParsedModInfo, allocator: std.mem.Allocator) !ParsedModInfo {
+        return ParsedModInfo{
+            .name = try allocator.dupe(u8, self.name),
+            .version = if (self.version) |version| try allocator.dupe(u8, version) else null,
+        };
+    }
+};
+
+const JarInfo = struct {
+    name: []const u8,
+    full_path: []const u8,
+
+    mods: []const ModInfo,
+
+    parsed_mod_info: ?ParsedModInfo = null,
+
+    pub fn deinit(self: JarInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.full_path);
+        if (self.parsed_mod_info) |parsed_mod_info| {
+            parsed_mod_info.deinit(allocator);
+        }
+        for (self.mods) |mod| mod.deinit(allocator);
+        allocator.free(self.mods);
+    }
+
+    pub fn clone(self: JarInfo, allocator: std.mem.Allocator) !JarInfo {
+        const mods_copy = try allocator.alloc(ModInfo, self.mods.len);
+        errdefer allocator.free(mods_copy);
+        for (self.mods, 0..) |mod, i| {
+            mods_copy[i] = try mod.clone(allocator);
+        }
+        return JarInfo{
+            .name = try allocator.dupe(u8, self.name),
+            .full_path = try allocator.dupe(u8, self.full_path),
+            .parsed_mod_info = if (self.parsed_mod_info) |parsed_mod_info| try allocator.dupe(u8, parsed_mod_info) else null,
+            .mods = mods_copy,
+        };
+    }
+};
+
 const ModParseError = error{FailedParseModInfo};
 
 const RemoteCommandError = error{FailedExecute};
@@ -149,6 +201,114 @@ fn parseModInfo(mod_info: []const u8, allocator: std.mem.Allocator) !ModMetadata
     return parse_result.value;
 }
 
+pub fn splitAny(allocator: std.mem.Allocator, text: []const u8, delimiters: []const u8) !std.ArrayList([]const u8) {
+    var result = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    errdefer result.deinit(allocator);
+
+    var start: usize = 0;
+    while (start < text.len) {
+        const maybe_pos = for (text[start..], start..) |c, i| {
+            if (std.mem.indexOfScalar(u8, delimiters, c) != null) break i;
+        } else text.len;
+
+        try result.append(allocator, text[start..maybe_pos]);
+
+        start = maybe_pos + 1;
+        if (maybe_pos >= text.len) break;
+    }
+
+    return result;
+}
+
+pub fn removeVersionLike(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var result = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+
+        if (std.ascii.isDigit(c)) {
+            var j = i + 1;
+            var looks_like_version = false;
+
+            while (j < input.len) : (j += 1) {
+                if (input[j] == '.') {
+                    if (j + 1 < input.len and std.ascii.isDigit(input[j + 1])) {
+                        looks_like_version = true;
+                        break;
+                    }
+                } else if (!std.ascii.isDigit(input[j])) {
+                    break;
+                }
+            }
+
+            if (looks_like_version) {
+                while (j < input.len and (std.ascii.isDigit(input[j]) or input[j] == '.')) {
+                    j += 1;
+                }
+                i = j - 1;
+                continue;
+            }
+        }
+
+        try result.append(allocator, c);
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+fn parsedModInfoFromName(allocator: std.mem.Allocator, jar_name: []const u8) !ParsedModInfo {
+    // delete .jar
+    const suffix = ".jar";
+    var name = jar_name;
+    if (std.mem.endsWith(u8, jar_name, suffix)) {
+        name = jar_name[0 .. jar_name.len - suffix.len];
+    }
+
+    var name_split = try splitAny(allocator, name, "-+");
+    defer name_split.deinit(allocator);
+
+    const discard_strs = &[_][]const u8{ "forge", "all" };
+
+    var version: ?[]const u8 = null;
+
+    var res_name: ?[]const u8 = null;
+
+    for (name_split.items) |item| {
+        var containp = false;
+        for (discard_strs) |discard| {
+            if (std.mem.eql(u8, discard, item)) {
+                containp = true;
+                break;
+            }
+        }
+
+        if (containp) {
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, item, "mc") and item.len >= 3 and std.ascii.isDigit(item[3])) {
+            continue;
+        }
+
+        if (std.SemanticVersion.parse(item)) |_| {
+            version = item;
+        } else |_| {
+            if (res_name == null) {
+                const item_trim = try removeVersionLike(allocator, item);
+                res_name = item_trim;
+            }
+        }
+    }
+
+    if (res_name == null) {
+        res_name = name;
+    }
+
+    return ParsedModInfo{ .name = if (res_name) |res| res else name, .version = if (version) |v| try allocator.dupe(u8, v) else null };
+}
+
 fn checkJarInfo(jar_path: []const u8, allocator: std.mem.Allocator) !ModMetadata {
     const argv = [_][]const u8{
         "unzip",
@@ -187,7 +347,7 @@ fn checkJarInfo(jar_path: []const u8, allocator: std.mem.Allocator) !ModMetadata
     return error.FailedParseModInfo;
 }
 
-pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const ModMetadata {
+pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const JarInfo {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -196,7 +356,7 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
     const dir = try cwd.openDir(dir_path, .{ .iterate = true });
     var it = dir.iterate();
 
-    var mod_infos = try std.ArrayList(ModMetadata).initCapacity(allocator, 0);
+    var mod_infos = try std.ArrayList(JarInfo).initCapacity(allocator, 0);
 
     var stderr_buffer: [512]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
@@ -207,16 +367,26 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
 
         if (!std.mem.eql(u8, std.fs.path.extension(entry.name), ".jar")) continue;
 
-        const full_path = try dir.realpathAlloc(allocator, entry.name);
-        defer allocator.free(full_path);
+        var jar_parse_info: ?ModMetadata = null;
 
-        if (checkJarInfo(full_path, arena_alloc)) |jar_info| {
-            const cloned = try jar_info.clone(allocator);
-            try mod_infos.append(allocator, cloned);
+        const full_path = try dir.realpathAlloc(allocator, entry.name);
+
+        if (checkJarInfo(full_path, arena_alloc)) |info| {
+            jar_parse_info = info;
+            // const cloned = try jar_info.clone(allocator);
+            // try mod_infos.append(allocator, cloned);
         } else |err| {
             try stderr.print("Error Parse {s}: {}\n", .{ full_path, err });
             try stderr.flush();
         }
+
+        const mod_info: JarInfo = JarInfo{
+            .name = entry.name,
+            .full_path = full_path,
+            .mods = if (jar_parse_info) |info| info.mods else &[0]ModInfo{},
+        };
+
+        try mod_infos.append(allocator, mod_info);
     }
 
     return mod_infos.toOwnedSlice(allocator);
@@ -401,4 +571,186 @@ test "parseModInfo more info" {
     ;
 
     _ = try parseModInfo(mods_toml, allocator);
+}
+
+test "splitAny test" {
+    const gpa = std.testing.allocator;
+
+    const cases = [_]struct {
+        input: []const u8,
+        expected: []const []const u8,
+    }{
+        .{
+            .input = "1.20.1-maid_storage_manager-1.14.5-all.jar",
+            .expected = &.{
+                "1.20.1",
+                "maid_storage_manager",
+                "1.14.5",
+                "all.jar",
+            },
+        },
+        .{
+            .input = "Endermod1.3.jar",
+            .expected = &.{
+                "Endermod1.3.jar", // 没有分隔符 → 整个字符串
+            },
+        },
+        .{
+            .input = "kotlinforforge-4.12.0-all.jar",
+            .expected = &.{
+                "kotlinforforge",
+                "4.12.0",
+                "all.jar",
+            },
+        },
+        .{
+            .input = "modernfix-forge-5.26.2+mc1.20.1.jar",
+            .expected = &.{
+                "modernfix",
+                "forge",
+                "5.26.2",
+                "mc1.20.1.jar", // + 被当作分隔符，所以 mc1.20.1.jar 作为一个独立段
+            },
+        },
+        .{
+            .input = "moonlight-1.20-2.16.27-forge.jar",
+            .expected = &.{
+                "moonlight",
+                "1.20",
+                "2.16.27",
+                "forge.jar",
+            },
+        },
+        .{
+            .input = "a-b+c-d++e",
+            .expected = &.{
+                "a",
+                "b",
+                "c",
+                "d",
+                "", // + 之间产生空段
+                "e",
+            },
+        },
+        .{
+            .input = "",
+            .expected = &.{}, // 空字符串 → 一个空段
+        },
+    };
+
+    for (cases, 0..) |case, index| {
+        var res = try splitAny(gpa, case.input, "-+");
+        defer res.deinit(gpa);
+
+        if (case.expected.len != res.items.len) {
+            std.debug.print(
+                \\[FAIL] {d}
+                \\  input  : {s}
+                \\  length : expected {d}, got {d}
+                \\
+            , .{ index, case.input, case.expected.len, res.items.len });
+
+            try std.testing.expectEqual(case.expected.len, res.items.len);
+        }
+
+        for (case.expected, res.items, 0..) |exp, act, i| {
+            if (!std.mem.eql(u8, exp, act)) {
+                std.debug.print(
+                    \\[FAIL] {d} (index {d})
+                    \\  input   : {s}
+                    \\  expected: '{s}'
+                    \\  actual  : '{s}'
+                    \\
+                , .{ index, i, case.input, exp, act });
+                try std.testing.expectEqualStrings(exp, act);
+            }
+        }
+    }
+}
+
+test "parsedModInfoFromName test" {
+    const gpa = std.testing.allocator;
+
+    const cases = [_]struct {
+        input: []const u8,
+        expected: ParsedModInfo,
+    }{
+        .{
+            .input = "1.20.1-maid_storage_manager-1.14.5-all.jar",
+            .expected = ParsedModInfo{
+                .name = "maid_storage_manager",
+                .version = "1.14.5",
+            },
+        },
+        .{
+            .input = "Endermod1.3.jar",
+            .expected = ParsedModInfo{
+                .name = "Endermod",
+                .version = "1.3",
+            },
+        },
+        .{
+            .input = "Endermod1.3.3.jar",
+            .expected = ParsedModInfo{
+                .name = "Endermod",
+                .version = "1.3.3",
+            },
+        },
+        .{
+            .input = "kotlinforforge-4.12.0-all.jar",
+            .expected = ParsedModInfo{
+                .name = "kotlinforforge",
+                .version = "4.12.0",
+            },
+        },
+        .{
+            .input = "modernfix-forge-5.26.2+mc1.20.1.jar",
+            .expected = ParsedModInfo{
+                .name = "modernfix",
+                .version = "5.26.2",
+            },
+        },
+        .{
+            .input = "moonlight-1.20-2.16.27-forge.jar",
+            .expected = ParsedModInfo{
+                .name = "moonlight",
+                .version = "2.16.27",
+            },
+        },
+    };
+
+    for (cases, 0..) |case, index| {
+        const res = try parsedModInfoFromName(gpa, case.input);
+        defer res.deinit(gpa);
+
+        if (!std.mem.eql(u8, res.name, case.expected.name)) {
+            std.debug.print(
+                \\[FAIL] {d}:
+                \\  input  : {s}
+                \\
+            , .{ index, case.input });
+
+            try std.testing.expectEqualStrings(res.name, case.expected.name);
+        }
+
+        if (case.expected.version) |expected_version| {
+            if (res.version) |res_version| {
+                if (!std.mem.eql(u8, expected_version, res_version)) {
+                    std.debug.print(
+                        \\[FAIL] {d}:
+                        \\  input  : {s}
+                        \\  expect version: {s}, return version: {s}
+                        \\
+                    , .{ index, case.input, expected_version, res_version });
+                }
+            } else {
+                std.debug.print(
+                    \\[FAIL] {d}:
+                    \\  input  : {s}
+                    \\  expect version: {s}, return version: Null
+                    \\
+                , .{ index, case.input, expected_version });
+            }
+        }
+    }
 }
