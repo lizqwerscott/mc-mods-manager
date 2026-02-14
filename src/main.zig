@@ -1,53 +1,8 @@
 const std = @import("std");
 
-const toml = @import("toml");
-
 const mc_mods_manager = @import("mc_mods_manager");
 
-const LocalConfig = struct {
-    path: []const u8,
-
-    fn deinit(self: LocalConfig, allocator: std.mem.Allocator) void {
-        allocator.free(self.path);
-    }
-
-    fn clone(self: LocalConfig, allocator: std.mem.Allocator) !LocalConfig {
-        return LocalConfig{
-            .path = try allocator.dupe(u8, self.path),
-        };
-    }
-};
-
-const RemoteConfig = struct {
-    host: []const u8,
-    path: []const u8,
-
-    fn deinit(self: RemoteConfig, allocator: std.mem.Allocator) void {
-        allocator.free(self.host);
-        allocator.free(self.path);
-    }
-
-    fn clone(self: RemoteConfig, allocator: std.mem.Allocator) !RemoteConfig {
-        return RemoteConfig{
-            .host = try allocator.dupe(u8, self.host),
-            .path = try allocator.dupe(u8, self.path),
-        };
-    }
-};
-
-const Config = struct {
-    local: LocalConfig,
-    remote: RemoteConfig,
-
-    fn deinit(self: Config, allocator: std.mem.Allocator) void {
-        self.local.deinit(allocator);
-        self.remote.deinit(allocator);
-    }
-
-    fn clone(self: Config, allocator: std.mem.Allocator) !Config {
-        return Config{ .local = try self.local.clone(allocator), .remote = try self.remote.clone(allocator) };
-    }
-};
+const config = @import("config.zig");
 
 var stdout_buffer: [512]u8 = undefined;
 // var stdin_buffer: [512]u8 = undefined;
@@ -73,13 +28,21 @@ pub fn main() !void {
     if (std.fs.cwd().access(config_path, .{})) {
         try stdout.print("load config {s}:\n", .{config_path});
         try stdout.flush();
-        const config = try loadConfig(config_path, main_allocator);
-        defer config.deinit(main_allocator);
+        const config_cli = try config.loadConfig(config_path, main_allocator);
+        defer config_cli.deinit(main_allocator);
 
-        try stdout.print("\nScan Local Dir: {s}\n", .{config.local.path});
+        try stdout.writeAll("Local:\n");
+        try stdout.print("  path: {s}\n", .{config_cli.local.path});
+
+        try stdout.writeAll("Remote:\n");
+        try stdout.print("  host: {s}\n", .{config_cli.remote.host});
+        try stdout.print("  path: {s}\n", .{config_cli.remote.path});
         try stdout.flush();
 
-        const local_jars = try mc_mods_manager.scanDirFile(config.local.path, main_allocator);
+        try stdout.print("\nScan Local Dir: {s}\n", .{config_cli.local.path});
+        try stdout.flush();
+
+        const local_jars = try mc_mods_manager.scanDirFile(config_cli.local.path, main_allocator);
         try stdout.print("\nLocal Found {d} mods:\n", .{local_jars.len});
         try stdout.flush();
 
@@ -94,10 +57,10 @@ pub fn main() !void {
             try stdout.flush();
         }
 
-        try stdout.print("\nScan Remote Dir: {s}\n", .{config.remote.path});
+        try stdout.print("\nScan Remote Dir: {s}\n", .{config_cli.remote.path});
         try stdout.flush();
 
-        const remote_jars = try mc_mods_manager.scanRemoteDirFile(config.remote.host, config.remote.path, main_allocator);
+        const remote_jars = try mc_mods_manager.scanRemoteDirFile(config_cli.remote.host, config_cli.remote.path, main_allocator);
 
         try stdout.print("\nRemote Found {d} mods:\n", .{remote_jars.len});
         try stdout.flush();
@@ -140,25 +103,4 @@ fn parseCommandLineWithArena(main_allocator: std.mem.Allocator) ![]const u8 {
     }
 
     return try main_allocator.dupe(u8, DEFAULT_CONFIG);
-}
-
-fn loadConfig(config_path: []const u8, main_allocator: std.mem.Allocator) !Config {
-    var parser = toml.Parser(Config).init(main_allocator);
-    defer parser.deinit();
-
-    var result = try parser.parseFile(config_path);
-
-    defer result.deinit();
-
-    const config = result.value;
-
-    try stdout.writeAll("Local:\n");
-    try stdout.print("  path: {s}\n", .{config.local.path});
-
-    try stdout.writeAll("Remote:\n");
-    try stdout.print("  host: {s}\n", .{config.remote.host});
-    try stdout.print("  path: {s}\n", .{config.remote.path});
-    try stdout.flush();
-
-    return try config.clone(main_allocator);
 }
