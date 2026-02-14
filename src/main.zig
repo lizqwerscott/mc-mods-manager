@@ -79,13 +79,17 @@ pub fn main() !void {
         try stdout.print("\nScan Local Dir: {s}\n", .{config.local.path});
         try stdout.flush();
 
-        const local_mods = try mc_mods_manager.scanDirFile(config.local.path, main_allocator);
-        try stdout.print("\nLocal Found {d} mods:\n", .{local_mods.len});
+        const local_jars = try mc_mods_manager.scanDirFile(config.local.path, main_allocator);
+        try stdout.print("\nLocal Found {d} mods:\n", .{local_jars.len});
         try stdout.flush();
 
-        for (local_mods, 0..) |mod, i| {
-            for (mod.mods) |mod_info| {
-                try stdout.print("Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
+        for (local_jars, 0..) |jar, i| {
+            try stdout.print("Jar {d}: {s}\n", .{ i + 1, jar.name });
+            for (jar.mods, 0..) |mod_info, j| {
+                try stdout.print("  Mod {d}: {s} (v{s})\n", .{ j + 1, mod_info.displayName, mod_info.version });
+            }
+            if (jar.parsed_mod_info) |parsed_info| {
+                try stdout.print("  Parsed Mod: {s} (v{s})\n", .{ parsed_info.name, if (parsed_info.version) |version| version else "Null" });
             }
             try stdout.flush();
         }
@@ -93,14 +97,15 @@ pub fn main() !void {
         try stdout.print("\nScan Remote Dir: {s}\n", .{config.remote.path});
         try stdout.flush();
 
-        const remote_mods = try mc_mods_manager.scanRemoteDirFile(config.remote.host, config.remote.path, main_allocator);
+        const remote_jars = try mc_mods_manager.scanRemoteDirFile(config.remote.host, config.remote.path, main_allocator);
 
-        try stdout.print("\nRemote Found {d} mods:\n", .{remote_mods.len});
+        try stdout.print("\nRemote Found {d} mods:\n", .{remote_jars.len});
         try stdout.flush();
 
-        for (remote_mods, 0..) |mod, i| {
-            for (mod.mods) |mod_info| {
-                try stdout.print("Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
+        for (remote_jars, 0..) |jar, i| {
+            try stdout.print("Jar {d}: {s}\n", .{ i + 1, jar.name });
+            for (jar.mods) |mod_info| {
+                try stdout.print("  Mod {d}: {s} (v{s})\n", .{ i + 1, mod_info.displayName, mod_info.version });
             }
             try stdout.flush();
         }
