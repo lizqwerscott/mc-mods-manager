@@ -1,11 +1,18 @@
 const std = @import("std");
 
 const mc_mods_manager = @import("mc_mods_manager");
-
 const config = @import("config.zig");
+const print_utils = @import("print_utils.zig");
 
-const SEPARATOR = "=" ** 60;
-const SUB_SEPARATOR = "-" ** 40;
+const Color = print_utils.Color;
+const SEPARATOR = print_utils.SEPARATOR;
+const SUB_SEPARATOR = print_utils.SUB_SEPARATOR;
+const printSeparator = print_utils.printSeparator;
+const printSubSeparator = print_utils.printSubSeparator;
+const printSectionHeader = print_utils.printSectionHeader;
+const printWarning = print_utils.printWarning;
+const printc = print_utils.printc;
+const printSectionHeaderColored = print_utils.printSectionHeaderColored;
 
 var stdout_buffer: [512]u8 = undefined;
 // var stdin_buffer: [512]u8 = undefined;
@@ -33,36 +40,43 @@ pub fn main() !void {
         defer config_cli.deinit(main_allocator);
 
         try printSeparator(stdout);
-        try printSectionHeader(stdout, "Configuration");
-        try stdout.print("Config file: {s}\n", .{config_path});
-        try stdout.print("\nLocal Settings:\n", .{});
-        try stdout.print("  • Path: {s}\n", .{config_cli.local.path});
-        try stdout.print("\nRemote Settings:\n", .{});
-        try stdout.print("  • Host: {s}\n", .{config_cli.remote.host});
-        try stdout.print("  • Path: {s}\n", .{config_cli.remote.path});
+        try printSectionHeaderColored(stdout, "Configuration", Color.cyan);
+        try printc(stdout, Color.cyan, "Config file: {s}\n", .{config_path});
+        try printc(stdout, Color.cyan, "\nLocal Settings:\n", .{});
+
+        try printc(stdout, Color.green, "  *", .{});
+        try printc(stdout, Color.white, " Path: {s}\n", .{config_cli.local.path});
+
+        try printc(stdout, Color.yellow, "\nRemote Settings:\n", .{});
+        try printc(stdout, Color.green, "  *", .{});
+        try printc(stdout, Color.white, " Host: {s}\n", .{config_cli.remote.host});
+        try printc(stdout, Color.green, "  *", .{});
+        try printc(stdout, Color.white, " Path: {s}\n", .{config_cli.remote.path});
         try stdout.flush();
 
         try stdout.writeAll("\n");
 
         try printSeparator(stdout);
-        try printSectionHeader(stdout, "Local Mods Scan");
+        try printSectionHeaderColored(stdout, "Local Mods Scan", Color.bright_blue);
         try stdout.print("Scanning directory: {s}\n\n", .{config_cli.local.path});
         try stdout.flush();
 
         const local_jars = try mc_mods_manager.scanDirFile(config_cli.local.path, main_allocator);
-        try stdout.print("\nLocal Found {d} mods:\n", .{local_jars.len});
+        try printc(stdout, Color.cyan, "\nLocal Found {d} mods:\n", .{local_jars.len});
         try stdout.flush();
 
         for (local_jars, 0..) |jar, i| {
-            try stdout.print("{d:>2}. {s}\n", .{ i + 1, jar.name });
+            try printc(stdout, Color.bright_blue, "{d:>2}. {s}\n", .{ i + 1, jar.name });
             for (jar.mods) |mod_info| {
-                try stdout.print("  └─ {s} (v{s})\n", .{ mod_info.displayName, mod_info.version });
+                try printc(stdout, Color.green, "  └─ {s} ", .{mod_info.displayName});
+                try printc(stdout, Color.yellow, "(v{s})\n", .{mod_info.version});
             }
             if (jar.parsed_mod_info) |parsed_info| {
-                try stdout.print("  └─ [Parsed] {s} (v{s})\n", .{ parsed_info.name, if (parsed_info.version) |version| version else "Null" });
+                try printc(stdout, Color.magenta, "  └─ [Parsed] {s} ", .{parsed_info.name});
+                try printc(stdout, Color.yellow, "(v{s})\n", .{if (parsed_info.version) |version| version else "Null"});
             }
             if (jar.mods.len == 0 and jar.parsed_mod_info == null) {
-                try printWarning(stdout, "No mod info found in this file\n", .{});
+                try printc(stdout, Color.bright_red, "Warning  No mod info found in this file\n", .{});
             }
 
             if (i < local_jars.len - 1) {
@@ -74,29 +88,31 @@ pub fn main() !void {
 
         try stdout.writeAll("\n");
         try printSeparator(stdout);
-        try printSectionHeader(stdout, "Remote Mods Scan");
+        try printSectionHeaderColored(stdout, "Remote Mods Scan", Color.bright_blue);
         try stdout.print("Scanning remote: {s}:{s}\n\n", .{ config_cli.remote.host, config_cli.remote.path });
         try stdout.flush();
 
         const remote_jars = try mc_mods_manager.scanRemoteDirFile(config_cli.remote.host, config_cli.remote.path, main_allocator);
 
-        try stdout.print("\nRemote Found {d} mods:\n", .{remote_jars.len});
+        try printc(stdout, Color.cyan, "\nRemote Found {d} mods:\n", .{remote_jars.len});
         try stdout.flush();
 
         for (remote_jars, 0..) |jar, i| {
-            try stdout.print("{d:>2}. {s}\n", .{ i + 1, jar.name });
+            try printc(stdout, Color.bright_blue, "{d:>2}. {s}\n", .{ i + 1, jar.name });
             for (jar.mods) |mod_info| {
-                try stdout.print("  └─ {s} (v{s})\n", .{ mod_info.displayName, mod_info.version });
+                try printc(stdout, Color.green, "  └─ {s} ", .{mod_info.displayName});
+                try printc(stdout, Color.yellow, "(v{s})\n", .{mod_info.version});
             }
 
             if (jar.parsed_mod_info) |parsed_info| {
-                try stdout.print("  └─ [Parsed] {s} (v{s})\n", .{ parsed_info.name, if (parsed_info.version) |version| version else "Null" });
+                try printc(stdout, Color.magenta, "  └─ [Parsed] {s} ", .{parsed_info.name});
+                try printc(stdout, Color.yellow, "(v{s})\n", .{if (parsed_info.version) |version| version else "Null"});
             }
             if (jar.mods.len == 0 and jar.parsed_mod_info == null) {
-                try printWarning(stdout, "No mod info found in this file\n", .{});
+                try printc(stdout, Color.bright_red, "Warning  No mod info found in this file\n", .{});
             }
 
-            if (i < local_jars.len - 1) {
+            if (i < remote_jars.len - 1) {
                 try stdout.writeAll("\n");
             }
 
@@ -133,22 +149,4 @@ fn parseCommandLineWithArena(main_allocator: std.mem.Allocator) ![]const u8 {
     }
 
     return try main_allocator.dupe(u8, DEFAULT_CONFIG);
-}
-
-// 添加格式化函数
-fn printSeparator(writer: anytype) !void {
-    try writer.print("{s}\n", .{SEPARATOR});
-}
-
-fn printSubSeparator(writer: anytype) !void {
-    try writer.print("{s}\n", .{SUB_SEPARATOR});
-}
-
-fn printSectionHeader(writer: anytype, title: []const u8) !void {
-    try writer.print("{s}\n", .{title});
-    try printSubSeparator(writer);
-}
-
-fn printWarning(writer: anytype, comptime format: []const u8, args: anytype) !void {
-    try writer.print("Warring  " ++ format, args);
 }
