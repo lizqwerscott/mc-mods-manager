@@ -50,6 +50,23 @@ const JarInfo = struct {
     }
 };
 
+const MatchRes = struct {
+    local_jar: *const JarInfo,
+    remote_jar: *const JarInfo,
+};
+
+const CompareResult = struct {
+    match_res: []const MatchRes,
+    local: []*const JarInfo,
+    remote: []*const JarInfo,
+
+    pub fn deinit(self: CompareResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.match_res);
+        allocator.free(self.local);
+        allocator.free(self.remote);
+    }
+};
+
 const ModParseError = error{FailedParseModInfo};
 
 fn checkJarInfo(jar_path: []const u8, allocator: std.mem.Allocator) !ModMetadata {
@@ -222,4 +239,74 @@ pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.
     }
 
     return jar_infos;
+}
+
+pub fn fuzzyMatchJars(allocator: std.mem.Allocator, local_jars: []const JarInfo, remote_jars: []const JarInfo) !CompareResult {
+    var match_res = try std.ArrayList(MatchRes).initCapacity(allocator, 0);
+    var remaining_local_jar = try std.ArrayList(*const JarInfo).initCapacity(allocator, 0);
+    var remaining_remote_jar = try std.ArrayList(*const JarInfo).initCapacity(allocator, 0);
+
+    defer match_res.deinit(allocator);
+    defer remaining_local_jar.deinit(allocator);
+    defer remaining_remote_jar.deinit(allocator);
+
+    var remote_mods_map = std.StringHashMap(struct { jar_info: *const JarInfo, index: usize }).init(allocator);
+    defer remote_mods_map.deinit();
+
+    var remote_mods_findp = try std.ArrayList(bool).initCapacity(allocator, remote_jars.len);
+    defer remote_mods_findp.deinit(allocator);
+
+    for (remote_jars, 0..) |*remote_jar, i| {
+        for (remote_jar.mods) |remote_mod| {
+            try remote_mods_map.put(remote_mod.modId, .{ .jar_info = remote_jar, .index = i });
+        }
+        if (remote_jar.parsed_mod_info) |info| {
+            try remote_mods_map.put(info.name, .{ .jar_info = remote_jar, .index = i });
+        }
+        try remote_mods_findp.append(allocator, false);
+    }
+
+    var find_localp = false;
+
+    for (local_jars) |*local_jar| {
+        find_localp = false;
+        for (local_jar.mods) |local_mod| {
+            if (remote_mods_map.get(local_mod.modId)) |remote_jar| {
+                if (!remote_mods_findp.items[remote_jar.index]) {
+                    try match_res.append(allocator, MatchRes{
+                        .local_jar = local_jar,
+                        .remote_jar = remote_jar.jar_info,
+                    });
+                    remote_mods_findp.items[remote_jar.index] = true;
+                    find_localp = true;
+                }
+            }
+        }
+        if (local_jar.parsed_mod_info) |info| {
+            if (remote_mods_map.get(info.name)) |remote_jar| {
+                if (!remote_mods_findp.items[remote_jar.index]) {
+                    try match_res.append(allocator, MatchRes{
+                        .local_jar = local_jar,
+                        .remote_jar = remote_jar.jar_info,
+                    });
+                    remote_mods_findp.items[remote_jar.index] = true;
+                }
+                find_localp = true;
+            }
+        }
+        if (!find_localp) {
+            try remaining_local_jar.append(allocator, local_jar);
+        }
+    }
+
+    for (remote_mods_findp.items, 0..) |findp, i| {
+        if (!findp) {
+            try remaining_remote_jar.append(allocator, &remote_jars[i]);
+        }
+    }
+    return CompareResult{
+        .match_res = try match_res.toOwnedSlice(allocator),
+        .local = try remaining_local_jar.toOwnedSlice(allocator),
+        .remote = try remaining_remote_jar.toOwnedSlice(allocator),
+    };
 }
