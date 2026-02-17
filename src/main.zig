@@ -61,11 +61,15 @@ pub fn main() !void {
         try stdout.print("Scanning directory: {s}\n\n", .{config_cli.local.path});
         try stdout.flush();
 
-        const local_jars = try mc_mods_manager.scanDirFile(config_cli.local.path, main_allocator);
-        try printc(stdout, Color.cyan, "\nLocal Found {d} mods:\n", .{local_jars.len});
+        var local_jars = try mc_mods_manager.scanDirFile(config_cli.local.path, main_allocator);
+        defer {
+            for (local_jars.items) |item| item.deinit(main_allocator);
+            local_jars.deinit(main_allocator);
+        }
+        try printc(stdout, Color.cyan, "\nLocal Found {d} mods:\n", .{local_jars.items.len});
         try stdout.flush();
 
-        for (local_jars, 0..) |jar, i| {
+        for (local_jars.items, 0..) |jar, i| {
             try printc(stdout, Color.bright_blue, "{d:>2}. {s}\n", .{ i + 1, jar.name });
             for (jar.mods) |mod_info| {
                 try printc(stdout, Color.green, "  └─ {s} ", .{mod_info.displayName});
@@ -79,7 +83,7 @@ pub fn main() !void {
                 try printc(stdout, Color.bright_red, "Warning  No mod info found in this file\n", .{});
             }
 
-            if (i < local_jars.len - 1) {
+            if (i < local_jars.items.len - 1) {
                 try stdout.writeAll("\n");
             }
 
@@ -92,12 +96,16 @@ pub fn main() !void {
         try stdout.print("Scanning remote: {s}:{s}\n\n", .{ config_cli.remote.host, config_cli.remote.path });
         try stdout.flush();
 
-        const remote_jars = try mc_mods_manager.scanRemoteDirFile(config_cli.remote.host, config_cli.remote.path, main_allocator);
+        var remote_jars = try mc_mods_manager.scanRemoteDirFile(config_cli.remote.host, config_cli.remote.path, main_allocator);
+        defer {
+            for (remote_jars.items) |item| item.deinit(main_allocator);
+            remote_jars.deinit(main_allocator);
+        }
 
-        try printc(stdout, Color.cyan, "\nRemote Found {d} mods:\n", .{remote_jars.len});
+        try printc(stdout, Color.cyan, "\nRemote Found {d} mods:\n", .{remote_jars.items.len});
         try stdout.flush();
 
-        for (remote_jars, 0..) |jar, i| {
+        for (remote_jars.items, 0..) |jar, i| {
             try printc(stdout, Color.bright_blue, "{d:>2}. {s}\n", .{ i + 1, jar.name });
             for (jar.mods) |mod_info| {
                 try printc(stdout, Color.green, "  └─ {s} ", .{mod_info.displayName});
@@ -112,7 +120,7 @@ pub fn main() !void {
                 try printc(stdout, Color.bright_red, "Warning  No mod info found in this file\n", .{});
             }
 
-            if (i < remote_jars.len - 1) {
+            if (i < remote_jars.items.len - 1) {
                 try stdout.writeAll("\n");
             }
 

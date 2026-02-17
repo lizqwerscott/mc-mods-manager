@@ -15,9 +15,15 @@ const JarInfo = struct {
     name: []const u8,
     full_path: []const u8,
 
-    mods: []const ModInfo,
+    mods: []const ModInfo = &[0]ModInfo{},
 
     parsed_mod_info: ?SimpleModInfo = null,
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, full_path: []const u8) !JarInfo {
+        const name_c = try allocator.dupe(u8, name);
+        const path_c = try allocator.dupe(u8, full_path);
+        return JarInfo{ .name = name_c, .full_path = path_c };
+    }
 
     pub fn deinit(self: JarInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -38,7 +44,7 @@ const JarInfo = struct {
         return JarInfo{
             .name = try allocator.dupe(u8, self.name),
             .full_path = try allocator.dupe(u8, self.full_path),
-            .parsed_mod_info = if (self.parsed_mod_info) |parsed_mod_info| try allocator.dupe(u8, parsed_mod_info) else null,
+            .parsed_mod_info = if (self.parsed_mod_info) |parsed_mod_info| try parsed_mod_info.clone(allocator) else null,
             .mods = mods_copy,
         };
     }
@@ -84,7 +90,7 @@ fn checkJarInfo(jar_path: []const u8, allocator: std.mem.Allocator) !ModMetadata
     return error.FailedParseModInfo;
 }
 
-pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const JarInfo {
+pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) !std.ArrayList(JarInfo) {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -94,6 +100,10 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
     var it = dir.iterate();
 
     var jar_infos = try std.ArrayList(JarInfo).initCapacity(allocator, 0);
+    errdefer {
+        for (jar_infos.items) |item| item.deinit(allocator);
+        jar_infos.deinit(allocator);
+    }
 
     var stderr_buffer: [512]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
@@ -108,10 +118,10 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
         var parsed_mod_info: ?SimpleModInfo = null;
 
         const full_path = try dir.realpathAlloc(allocator, entry.name);
+        defer allocator.free(full_path);
 
         if (checkJarInfo(full_path, arena_alloc)) |info| {
-            const cloned = try info.clone(allocator);
-            jar_parse_info = cloned;
+            jar_parse_info = info;
         } else |err| {
             try stderr.print("Error Parse {s}: {}\n", .{ full_path, err });
             try stderr.flush();
@@ -124,12 +134,22 @@ pub fn scanDirFile(dir_path: []const u8, allocator: std.mem.Allocator) ![]const 
             }
         }
 
-        const mod_info: JarInfo = JarInfo{ .name = entry.name, .full_path = full_path, .mods = if (jar_parse_info) |info| info.mods else &[0]ModInfo{}, .parsed_mod_info = parsed_mod_info };
+        var jar_info = try JarInfo.init(allocator, entry.name, full_path);
+        if (jar_parse_info) |info| {
+            const mods_copy = try allocator.alloc(ModInfo, info.mods.len);
+            errdefer allocator.free(mods_copy);
+            for (info.mods, 0..) |mod, i| {
+                mods_copy[i] = try mod.clone(allocator);
+            }
 
-        try jar_infos.append(allocator, mod_info);
+            jar_info.mods = mods_copy;
+        }
+        jar_info.parsed_mod_info = parsed_mod_info;
+
+        try jar_infos.append(allocator, jar_info);
     }
 
-    return jar_infos.toOwnedSlice(allocator);
+    return jar_infos;
 }
 
 fn checkRemoteJarInfo(allocator: std.mem.Allocator, host: []const u8, jar_path: []const u8) !ModMetadata {
@@ -141,7 +161,7 @@ fn checkRemoteJarInfo(allocator: std.mem.Allocator, host: []const u8, jar_path: 
     return try mods_toml.parseModInfo(result, allocator);
 }
 
-pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.mem.Allocator) ![]const JarInfo {
+pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.mem.Allocator) !std.ArrayList(JarInfo) {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -154,6 +174,10 @@ pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.
     const stderr = &stderr_writer.interface;
 
     var jar_infos = try std.ArrayList(JarInfo).initCapacity(allocator, 0);
+    errdefer {
+        for (jar_infos.items) |item| item.deinit(allocator);
+        jar_infos.deinit(allocator);
+    }
 
     for (file_names) |name| {
         if (!std.mem.eql(u8, std.fs.path.extension(name), ".jar")) continue;
@@ -166,9 +190,9 @@ pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.
 
         const host_cloned = try arena_alloc.dupe(u8, host);
         defer arena_alloc.free(host_cloned);
+
         if (checkRemoteJarInfo(arena_alloc, host_cloned, full_path)) |info| {
-            const cloned = try info.clone(allocator);
-            jar_parse_info = cloned;
+            jar_parse_info = info;
         } else |err| {
             try stderr.print("Error Parse {s}: {}\n", .{ full_path, err });
             try stderr.flush();
@@ -181,12 +205,21 @@ pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.
             }
         }
 
-        const name_cloned = try allocator.dupe(u8, name);
+        var jar_info = try JarInfo.init(allocator, name, full_path);
 
-        const mod_info: JarInfo = JarInfo{ .name = name_cloned, .full_path = full_path, .mods = if (jar_parse_info) |info| info.mods else &[0]ModInfo{}, .parsed_mod_info = parsed_mod_info };
+        if (jar_parse_info) |info| {
+            const mods_copy = try allocator.alloc(ModInfo, info.mods.len);
+            errdefer allocator.free(mods_copy);
+            for (info.mods, 0..) |mod, i| {
+                mods_copy[i] = try mod.clone(allocator);
+            }
 
-        try jar_infos.append(allocator, mod_info);
+            jar_info.mods = mods_copy;
+        }
+        jar_info.parsed_mod_info = parsed_mod_info;
+
+        try jar_infos.append(allocator, jar_info);
     }
 
-    return jar_infos.toOwnedSlice(allocator);
+    return jar_infos;
 }
