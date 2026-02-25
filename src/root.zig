@@ -53,6 +53,7 @@ const JarInfo = struct {
 const MatchRes = struct {
     local_jar: *const JarInfo,
     remote_jar: *const JarInfo,
+    similarity: f32 = 0.0,
 };
 
 const CompareResult = struct {
@@ -241,6 +242,57 @@ pub fn scanRemoteDirFile(host: []const u8, dir_path: []const u8, allocator: std.
     return jar_infos;
 }
 
+fn calcNameScore(allocator: std.mem.Allocator, jarname1: []const u8, jarname2: []const u8) !f32 {
+    const n = jarname1.len;
+    const m = jarname2.len;
+
+    if (n == 0 and m == 0) return 100;
+    if (n == 0 or m == 0) return 0;
+
+    if (std.mem.eql(u8, jarname1, jarname2)) return 100;
+
+    var s1: []const u8 = undefined;
+    var s2: []const u8 = undefined;
+
+    if (n < m) {
+        s1 = jarname1;
+        s2 = jarname2;
+    } else {
+        s1 = jarname2;
+        s2 = jarname1;
+    }
+
+    const len1 = s1.len;
+    const len2 = s2.len;
+
+    var prev_row = try allocator.alloc(usize, len2 + 1);
+    defer allocator.free(prev_row);
+    var curr_row = try allocator.alloc(usize, len2 + 1);
+    defer allocator.free(curr_row);
+
+    for (prev_row, 0..) |_, i| {
+        prev_row[i] = i;
+    }
+
+    for (s1, 0..) |c1, i| {
+        curr_row[0] = i + 1;
+        for (s2, 0..) |c2, j| {
+            const cost: usize = if (c1 == c2) 0 else 1;
+            curr_row[j + 1] = @min(curr_row[j] + 1, // 插入
+                @min(prev_row[j + 1] + 1, // 删除
+                    prev_row[j] + cost // 替换
+                    ));
+        }
+        @memcpy(prev_row, curr_row);
+    }
+
+    const distance = prev_row[len2];
+    const max_len = @max(len1, len2);
+
+    const ratio = 1.0 - (@as(f32, @floatFromInt(distance)) / @as(f32, @floatFromInt(max_len)));
+    return ratio;
+}
+
 pub fn fuzzyMatchJars(allocator: std.mem.Allocator, local_jars: []const JarInfo, remote_jars: []const JarInfo) !CompareResult {
     var match_res = try std.ArrayList(MatchRes).initCapacity(allocator, 0);
     var remaining_local_jar = try std.ArrayList(*const JarInfo).initCapacity(allocator, 0);
@@ -276,6 +328,7 @@ pub fn fuzzyMatchJars(allocator: std.mem.Allocator, local_jars: []const JarInfo,
                     try match_res.append(allocator, MatchRes{
                         .local_jar = local_jar,
                         .remote_jar = remote_jar.jar_info,
+                        .similarity = 1.0,
                     });
                     remote_mods_findp.items[remote_jar.index] = true;
                     find_localp = true;
@@ -288,6 +341,7 @@ pub fn fuzzyMatchJars(allocator: std.mem.Allocator, local_jars: []const JarInfo,
                     try match_res.append(allocator, MatchRes{
                         .local_jar = local_jar,
                         .remote_jar = remote_jar.jar_info,
+                        .similarity = 1.0,
                     });
                     remote_mods_findp.items[remote_jar.index] = true;
                 }
@@ -304,6 +358,38 @@ pub fn fuzzyMatchJars(allocator: std.mem.Allocator, local_jars: []const JarInfo,
             try remaining_remote_jar.append(allocator, &remote_jars[i]);
         }
     }
+
+    var i: usize = remaining_local_jar.items.len;
+    while (i > 0) {
+        i -= 1;
+        const r_local_jar = remaining_local_jar.items[i];
+        var max_score: f32 = 0;
+        var max_score_index: ?usize = null;
+        var max_score_remote_jar: ?*const JarInfo = null;
+
+        for (remaining_remote_jar.items, 0..) |r_remote_jar, j| {
+            const score = try calcNameScore(allocator, r_local_jar.name, r_remote_jar.name);
+            if (score > max_score) {
+                max_score = score;
+                max_score_index = j;
+                max_score_remote_jar = r_remote_jar;
+            }
+        }
+
+        if (max_score_remote_jar) |m_remote_jar| {
+            if (max_score >= 0.5) {
+                try match_res.append(allocator, MatchRes{
+                    .local_jar = r_local_jar,
+                    .remote_jar = m_remote_jar,
+                    .similarity = max_score,
+                });
+
+                _ = remaining_local_jar.orderedRemove(i);
+                _ = remaining_remote_jar.orderedRemove(max_score_index.?);
+            }
+        }
+    }
+
     return CompareResult{
         .match_res = try match_res.toOwnedSlice(allocator),
         .local = try remaining_local_jar.toOwnedSlice(allocator),

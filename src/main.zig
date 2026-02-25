@@ -136,7 +136,7 @@ pub fn main() !void {
 
         try printc(stdout, Color.bright_green, "\nMatched ({d} pairs):\n", .{compare_res.match_res.len});
         if (compare_res.match_res.len > 0) {
-            try printc(stdout, Color.white, "  {s:<45} {s:<45}\n", .{ "Local Mod", "Remote Mod" });
+            try printc(stdout, Color.white, "  {s:<45} {s:<45} {s:<10}", .{ "Local Mod", "Remote Mod", "Similarity" });
             try printSeparator(stdout);
 
             for (compare_res.match_res, 0..) |match_res, i| {
@@ -144,7 +144,8 @@ pub fn main() !void {
                 try printc(stdout, Color.green, "  {s} ", .{prefix});
                 try printc(stdout, Color.cyan, "{s:<42} ", .{match_res.local_jar.name});
                 try printc(stdout, Color.white, "→ ", .{});
-                try printc(stdout, Color.yellow, "{s}\n", .{match_res.remote_jar.name});
+                try printc(stdout, Color.yellow, "{s:<42} ", .{match_res.remote_jar.name});
+                try printc(stdout, Color.bright_magenta, " {d:>}%\n", .{match_res.similarity * 100.0});
             }
         } else {
             try printc(stdout, Color.bright_red, "  No matches found\n", .{});
